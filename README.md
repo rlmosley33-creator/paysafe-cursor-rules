@@ -1,0 +1,1 @@
+# paysafe-cursor-rules
