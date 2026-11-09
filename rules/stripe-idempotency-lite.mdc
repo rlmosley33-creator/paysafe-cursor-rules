@@ -1,0 +1,53 @@
+---
+description: Process Stripe webhooks exactly once — persist event ids and use Idempotency-Keys on creates
+globs: **/api/**/stripe/**/*.ts, **/api/**/webhook*/**/*.ts, **/lib/stripe*.ts
+alwaysApply: false
+---
+
+# Stripe idempotency (PaySafe Lite)
+
+Stripe delivers webhooks **at least once**. Retries happen. You MUST dedupe by the Stripe event id.
+
+## Webhook exactly-once (app side)
+
+```ts
+// lib/stripe-idempotency.ts
+export async function alreadyProcessed(eventId: string) {
+  const row = await db.stripeEvent.findUnique({ where: { id: eventId } });
+  return !!row;
+}
+
+export async function markProcessed(eventId: string) {
+  await db.stripeEvent.create({
+    data: { id: eventId, processedAt: new Date() },
+  });
+}
+```
+
+Pattern:
+
+1. `constructEvent` (see stripe-webhook-verify rule)
+2. If `alreadyProcessed(eventId)` → return 200
+3. Apply side effects in a transaction when possible
+4. `markProcessed(eventId)` — prefer a **unique constraint** on the event id; treat conflict as success
+
+## Stripe API Idempotency-Key (creates)
+
+When creating Checkout Sessions from a button that may double-click:
+
+```ts
+await stripe.checkout.sessions.create(
+  { /* params */ },
+  { idempotencyKey: `checkout_${userId}_${plan}_${dayBucket}` },
+);
+```
+
+Use a key stable for the same logical intent (not a random UUID per click unless you want a new session every time).
+
+## Common mistakes
+
+- Deduping only in memory (lost on serverless cold start / multi-instance)
+- Marking processed **before** side effects succeed (event lost)
+- Marking processed after side effects without uniqueness → double grant on crash window
+
+> Free sample from **PaySafe Skills**. Full pack: https://mosleybot.gumroad.com/l/aylry

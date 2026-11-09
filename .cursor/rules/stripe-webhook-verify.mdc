@@ -1,0 +1,56 @@
+---
+description: Verify Stripe webhooks with constructEvent + raw body; never grant access on success URL alone
+globs: **/api/**/stripe/**/*.ts, **/api/**/webhook*/**/*.ts, **/api/webhooks/**/*.ts
+alwaysApply: false
+---
+
+# Stripe webhook verification (PaySafe Lite)
+
+## NEVER
+
+- NEVER grant paid access, downloads, credits, or plan upgrades based only on the Checkout **success URL** or query params (`?session_id=`, `?paid=1`).
+- NEVER skip `stripe.webhooks.constructEvent` — do not parse JSON and trust it.
+- NEVER use `req.json()` / a pre-parsed body for webhook verification; you need the **raw** body bytes (`req.text()` / `arrayBuffer()`).
+- NEVER disable signature verification "just for local testing" in code that can ship to production. Use Stripe CLI + separate test secrets.
+
+## MUST
+
+- MUST create Checkout Sessions / PaymentIntents on the **server** (Route Handler / Server Action).
+- MUST verify webhooks with `constructEvent(rawBody, signature, webhookSecret)`.
+- MUST grant entitlements only in webhook handlers (or a trusted server job that reads verified Stripe state).
+- MUST treat success/cancel URLs as UX only: show "processing…" and poll your DB / entitlement API.
+- MUST keep test and live secrets separated (`sk_test_` vs `sk_live_`, matching `whsec_`).
+
+## App Router sketch
+
+```ts
+// app/api/stripe/webhook/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { stripe } from '@/lib/stripe';
+
+export const runtime = 'nodejs';
+
+export async function POST(req: NextRequest) {
+  const sig = req.headers.get('stripe-signature');
+  if (!sig) return NextResponse.json({ error: 'No signature' }, { status: 400 });
+
+  const rawBody = await req.text();
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(
+      rawBody,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET!,
+    );
+  } catch {
+    return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
+  }
+
+  await handleStripeEvent(event);
+  return NextResponse.json({ received: true });
+}
+```
+
+When uncertain: prefer failing closed (no access) over granting early.
+
+> Free sample from **PaySafe Skills**. Full pack (4 rules + 14 skills + prompts + examples + go-live checklist): https://mosleybot.gumroad.com/l/aylry
